@@ -708,7 +708,9 @@ class BiliBiliPackage constructor(private val mClassLoader: ClassLoader, mContex
                 }?.declaringClass ?: return@biliAccounts
                 class_ = class_ { name = biliAccountsClass.name }
                 val biliAccountIndex = dexHelper.encodeClassIndex(biliAccountsClass)
-                val biliAuthFragmentMethodIndex = dexHelper.findMethodUsingString(
+                // 调用图反推兼容方法名被混淆的历史版本；锚点 "initFacial enter" 失效时
+                // (如 8.98.0 方法名未混淆)，回退到按签名/方法名直接查找
+                val calledMethods = dexHelper.findMethodUsingString(
                     "initFacial enter",
                     true,
                     -1,
@@ -719,30 +721,38 @@ class BiliBiliPackage constructor(private val mClassLoader: ClassLoader, mContex
                     null,
                     null,
                     true
-                ).firstOrNull() ?: return@biliAccounts
-                val calledMethods = dexHelper.findMethodInvoking(
-                    biliAuthFragmentMethodIndex,
-                    -1,
-                    -1,
-                    null,
-                    biliAccountIndex,
-                    null,
-                    null,
-                    null,
-                    false
-                ).asSequence().mapNotNull {
-                    dexHelper.decodeMethodIndex(it) as? Method
+                ).firstOrNull()?.let {
+                    dexHelper.findMethodInvoking(
+                        it,
+                        -1,
+                        -1,
+                        null,
+                        biliAccountIndex,
+                        null,
+                        null,
+                        null,
+                        false
+                    ).asSequence().mapNotNull { m ->
+                        dexHelper.decodeMethodIndex(m) as? Method
+                    }
                 }
 
                 get = method {
-                    name = calledMethods.firstOrNull {
+                    name = calledMethods?.firstOrNull {
                         it.isStatic && it.parameterTypes.size == 1 && it.parameterTypes[0] == Context::class.java && it.returnType == biliAccountsClass
+                    }?.name ?: biliAccountsClass.declaredMethods.firstOrNull {
+                        it.isStatic && it.parameterTypes.size == 1
+                                && it.parameterTypes[0] == Context::class.java
+                                && it.returnType == biliAccountsClass
                     }?.name ?: return@method
                 }
-
                 getAccessKey = method {
-                    name = calledMethods.firstOrNull {
+                    name = calledMethods?.firstOrNull {
                         it.isNotStatic && it.parameterTypes.isEmpty() && it.returnType == String::class.java
+                    }?.name ?: biliAccountsClass.declaredMethods.firstOrNull {
+                        it.name == "getAccessKey" && it.isNotStatic
+                                && it.parameterTypes.isEmpty()
+                                && it.returnType == String::class.java
                     }?.name ?: return@method
                 }
             }
